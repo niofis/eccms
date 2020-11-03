@@ -1,0 +1,1 @@
+curl --url 'smtp://127.0.0.1:2525' --mail-from 'developer@gmail.com' --mail-rcpt 'edm-user@niceperson.com'
