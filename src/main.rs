@@ -2,31 +2,44 @@ use std::error::Error;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::net::{TcpListener, TcpStream};
+use std::string::String;
 
 #[derive(Debug)]
 enum Command {
     Ehlo(String),
-    Helo,
-    Mail,
-    Rcpt,
+    Helo(String),
+    Mail(String),
+    Rcpt(String),
     Data,
     Rset,
     Noop,
     Quit,
     Vrfy,
+    Unsupported,
 }
 
 #[derive(Debug)]
 struct MailExchange {
-    client_name: String,
+    domain: String,
+    from: String,
+    to: String,
+    data: String,
+    current_command: Command,
 }
 
 fn get_command(line: &String) -> Option<Command> {
-    let parts: Vec<&str> = line.split(' ').collect();
-    match &parts.get(0)?.to_lowercase()[..] {
-        "ehlo" => Some(Command::Ehlo(parts.get(1)?.to_string())),
-        "helo" => Some(Command::Helo),
-        _ => Some(Command::Noop),
+    let command = &line[0..4];
+    match &command.to_lowercase()[..] {
+        "ehlo" => Some(Command::Ehlo(line[5..].to_string())),
+        "helo" => Some(Command::Helo(line[5..].to_string())),
+        "mail" => Some(Command::Mail(line[5..].to_string())),
+        "rcpt" => Some(Command::Rcpt(line[5..].to_string())),
+        "data" => Some(Command::Data),
+        "noop" => Some(Command::Noop),
+        "rset" => Some(Command::Rset),
+        "vrfy" => Some(Command::Vrfy),
+        "quit" => Some(Command::Quit),
+        _ => Some(Command::Unsupported),
     }
 }
 
@@ -34,13 +47,17 @@ fn handle_client(mut stream: TcpStream) {
     stream
         .write("220 Eccentric Mail Server Ready\r\n".as_bytes())
         .unwrap();
-    let mut buffer = String::new();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut mail_exchange = MailExchange {
-        client_name: String::new(),
+        domain: String::new(),
+        from: String::new(),
+        to: String::new(),
+        data: String::new(),
+        current_command: Command::Noop,
     };
 
     loop {
+        let mut buffer = String::new();
         match reader.read_line(&mut buffer) {
             Ok(total) => {
                 if total == 0 {
@@ -49,20 +66,64 @@ fn handle_client(mut stream: TcpStream) {
                 let command = get_command(&buffer).unwrap();
                 println!("Line: {} Command: {:?}", buffer, command);
                 match command {
-                    Command::Ehlo(client_name) => {
-                        mail_exchange.client_name = client_name;
+                    Command::Ehlo(domain) => {
+                        mail_exchange.domain = domain.to_owned();
+                        stream.write("250 OK\r\n".as_bytes()).unwrap();
+                    }
+                    Command::Helo(domain) => {
+                        mail_exchange.domain = domain.to_owned();
+                        stream.write("250 OK\r\n".as_bytes()).unwrap();
+                    }
+                    Command::Mail(from) => {
+                        mail_exchange.from = from.to_owned();
+                        stream.write("250 OK\r\n".as_bytes()).unwrap();
+                    }
+                    Command::Rcpt(to) => {
+                        mail_exchange.to = to.to_owned();
+                        stream.write("250 OK\r\n".as_bytes()).unwrap();
+                    }
+                    Command::Vrfy => {
+                        stream.write("250 OK\r\n".as_bytes()).unwrap();
+                    }
+                    Command::Data => {
+                        stream.write("354\r\n".as_bytes()).unwrap();
+                        loop {
+                            let mut buffer = String::new();
+                            if let Ok(_) = reader.read_line(&mut buffer) {
+                                mail_exchange.data = mail_exchange.data + &buffer;
+                                println!("data -> {}", buffer);
+                                if buffer.ends_with(".\r\n") {
+                                    stream.write("250 OK\r\n".as_bytes()).unwrap();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Command::Noop => {
+                        stream.write("250 OK\r\n".as_bytes()).unwrap();
+                    }
+                    Command::Rset => {
+                        mail_exchange = MailExchange {
+                            domain: String::new(),
+                            from: String::new(),
+                            to: String::new(),
+                            data: String::new(),
+                            current_command: Command::Noop,
+                        };
+                        stream.write("250 OK\r\n".as_bytes()).unwrap();
+                    }
+                    Command::Quit => {
+                        stream.write("221 OK\r\n".as_bytes()).unwrap();
+                        println!("MailExchange: {:?}", mail_exchange);
+                        return;
+                    }
+                    Command::Unsupported => {
                         stream
                             .write("500 Command not recognized\r\n".as_bytes())
-                            .unwrap()
+                            .unwrap();
                     }
-                    Command::Helo => stream
-                        .write("500 Command not recognized\r\n".as_bytes())
-                        .unwrap(),
-                    _ => stream
-                        .write("500 Command not recognized\r\n".as_bytes())
-                        .unwrap(),
                 };
-                println!("MailExchange: {:?}", mail_exchange);
+                //println!("MailExchange: {:?}", mail_exchange);
             }
             Err(err) => panic!(err),
         }
